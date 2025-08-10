@@ -1,0 +1,28 @@
+# Archivos de entorno y configuración local
+.env
+*.env
+
+# Archivos de base de datos y SQL
+db/init.sql
+
+# Carpetas de dependencias
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs y archivos temporales
+*.log
+*.tmp
+*.temp
+
+# Configuración de Docker
+*.pid
+*.seed
+.docker/
+docker-compose.override.yml
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
