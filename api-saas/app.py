@@ -230,6 +230,22 @@ def get_packages():
     with connection.cursor() as cursor:
         cursor.execute(query, params)
         result = cursor.fetchall()
+        
+        # Check each package if it exists in related tables
+        for package in result:
+            package_id = package['id']
+            # Check in entries, detections, notices, and logs tables
+            cursor.execute("""
+                SELECT EXISTS(SELECT 1 FROM entries WHERE package_id = %s) AS in_entries,
+                       EXISTS(SELECT 1 FROM detections WHERE package_id = %s) AS in_detections,
+                       EXISTS(SELECT 1 FROM notices WHERE package_id = %s) AS in_notices,
+                       EXISTS(SELECT 1 FROM logs WHERE package_id = %s) AS in_logs
+            """, (package_id, package_id, package_id, package_id))
+            
+            exists = cursor.fetchone()
+            # If any of the exists checks is True (1), then vacio = 0, else 1
+            package['vacio'] = 0 if any(exists.values()) else 1
+            
     connection.close()
     return jsonify(result)
 
