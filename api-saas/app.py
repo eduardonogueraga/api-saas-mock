@@ -45,6 +45,8 @@ def index():
 @app.route('/entries', methods=['GET'])
 def get_entries():
     filters = {
+        "id": request.args.get("id"),
+        "package_id": request.args.get("package_id"),
         "tipo": request.args.get("tipo"),
         "modo": request.args.get("modo"),
         "restaurada": request.args.get("restaurada")
@@ -68,6 +70,8 @@ def get_entries():
 def get_detections():
     # Leer filtros
     filters = {
+        "id": request.args.get("id"),
+        "package_id": request.args.get("package_id"),
         "intrusismo": request.args.get("intrusismo"),
         "umbral": request.args.get("umbral"),
         "restaurado": request.args.get("restaurado"),
@@ -105,6 +109,16 @@ def get_detections():
     # Construir cláusula WHERE dinámica
     where_clauses = []
     params = []
+
+    # Filtro específico por ID de detección (tabla detections)
+    if filters["id"] is not None:
+        where_clauses.append("d.id = %s")
+        params.append(filters["id"])
+
+    # Filtro específico por package_id de detections
+    if filters["package_id"] is not None:
+        where_clauses.append("d.package_id = %s")
+        params.append(filters["package_id"])
 
     if filters["intrusismo"] is not None:
         where_clauses.append("d.intrusismo = %s")
@@ -155,6 +169,8 @@ def get_detections():
 @app.route('/logs', methods=['GET'])
 def get_logs():
     filters = {
+        "id": request.args.get("id"),
+        "package_id": request.args.get("package_id"),
         "descripcion": request.args.get("descripcion")
     }
     created_from = request.args.get("created_from")
@@ -175,6 +191,8 @@ def get_logs():
 @app.route('/notices', methods=['GET'])
 def get_notices():
     filters = {
+        "id": request.args.get("id"),
+        "package_id": request.args.get("package_id"),
         "tipo": request.args.get("tipo"),
         "telefono": request.args.get("telefono")
     }
@@ -196,6 +214,7 @@ def get_notices():
 @app.route('/packages', methods=['GET'])
 def get_packages():
     filters = {
+        "id": request.args.get("id"),
         "implantado": request.args.get("implantado"),
         "saa_version": request.args.get("saa_version")
     }
@@ -217,6 +236,7 @@ def get_packages():
 @app.route('/applogs', methods=['GET'])
 def get_applogs():
     filters = {
+        "id": request.args.get("id"),
         "tipo": request.args.get("tipo"),
         "desc": request.args.get("desc")
     }
@@ -238,6 +258,7 @@ def get_applogs():
 @app.route('/system_notices', methods=['GET'])
 def get_system_notices():
     filters = {
+        "id": request.args.get("id"),
         "tipo": request.args.get("tipo"),
         "procesado": request.args.get("procesado")
     }
@@ -283,6 +304,282 @@ def get_alarms():
         result = cursor.fetchall()
     connection.close()
     return jsonify(result)
+
+@app.route('/packages/<int:package_id>/details', methods=['GET'])
+def get_package_details(package_id):
+    """Devuelve datos agregados del paquete y sus recursos asociados.
+
+    Params opcionales:
+      - include: lista separada por comas (entries,detections,logs,notices)
+      - created_from, created_to: filtros de fecha (aplican a tablas con created_at; en detections filtra por d.fecha)
+      - Paginación por colección:
+          limit_entries, offset_entries
+          limit_detections, offset_detections
+          limit_logs, offset_logs
+          limit_notices, offset_notices
+    """
+
+    include_param = request.args.get('include', 'entries,detections,logs,notices')
+    include = {part.strip() for part in include_param.split(',') if part.strip()}
+
+    created_from = request.args.get('created_from')
+    created_to = request.args.get('created_to')
+
+    # Límites por colección
+    limit_entries = int(request.args.get('limit_entries', 50))
+    offset_entries = int(request.args.get('offset_entries', 0))
+
+    limit_detections = int(request.args.get('limit_detections', 50))
+    offset_detections = int(request.args.get('offset_detections', 0))
+
+    limit_logs = int(request.args.get('limit_logs', 50))
+    offset_logs = int(request.args.get('offset_logs', 0))
+
+    limit_notices = int(request.args.get('limit_notices', 50))
+    offset_notices = int(request.args.get('offset_notices', 0))
+
+    response = {}
+
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            # Paquete
+            cursor.execute("SELECT * FROM packages WHERE id = %s", (package_id,))
+            response["package"] = cursor.fetchone()
+
+            # Entries
+            if 'entries' in include:
+                filters_entries = {"package_id": package_id}
+                query_entries, params_entries = build_query("entries", filters_entries, created_from, created_to)
+                params_entries.extend([limit_entries, offset_entries])
+                cursor.execute(query_entries, params_entries)
+                response["entries"] = cursor.fetchall()
+
+            # Detections (usa d.package_id y fecha en d.fecha)
+            if 'detections' in include:
+                query_det = """
+                    SELECT 
+                        d.id AS detection_id,
+                        d.entry_id,
+                        d.package_id,
+                        d.intrusismo,
+                        d.umbral,
+                        d.restaurado,
+                        d.modo_deteccion,
+                        d.fecha
+                    FROM detections d
+                    WHERE d.package_id = %s
+                """
+                params_det = [package_id]
+                if created_from:
+                    query_det += " AND d.fecha >= %s"
+                    params_det.append(created_from)
+                if created_to:
+                    query_det += " AND d.fecha <= %s"
+                    params_det.append(created_to)
+                query_det += " ORDER BY d.fecha DESC LIMIT %s OFFSET %s"
+                params_det.extend([limit_detections, offset_detections])
+                cursor.execute(query_det, params_det)
+                response["detections"] = cursor.fetchall()
+
+            # Logs
+            if 'logs' in include:
+                filters_logs = {"package_id": package_id}
+                query_logs, params_logs = build_query("logs", filters_logs, created_from, created_to)
+                params_logs.extend([limit_logs, offset_logs])
+                cursor.execute(query_logs, params_logs)
+                response["logs"] = cursor.fetchall()
+
+            # Notices
+            if 'notices' in include:
+                filters_notices = {"package_id": package_id}
+                query_notices, params_notices = build_query("notices", filters_notices, created_from, created_to)
+                params_notices.extend([limit_notices, offset_notices])
+                cursor.execute(query_notices, params_notices)
+                response["notices"] = cursor.fetchall()
+
+            # Counts (ignoran paginación)
+            counts = {}
+            # Entries count
+            count_q = "SELECT COUNT(*) AS count FROM entries WHERE 1=1 AND package_id = %s"
+            count_p = [package_id]
+            if created_from:
+                count_q += " AND created_at >= %s"
+                count_p.append(created_from)
+            if created_to:
+                count_q += " AND created_at <= %s"
+                count_p.append(created_to)
+            cursor.execute(count_q, count_p)
+            counts["entries"] = cursor.fetchone()["count"]
+
+            # Detections count
+            count_q = "SELECT COUNT(*) AS count FROM detections d WHERE d.package_id = %s"
+            count_p = [package_id]
+            if created_from:
+                count_q += " AND d.fecha >= %s"
+                count_p.append(created_from)
+            if created_to:
+                count_q += " AND d.fecha <= %s"
+                count_p.append(created_to)
+            cursor.execute(count_q, count_p)
+            counts["detections"] = cursor.fetchone()["count"]
+
+            # Logs count
+            count_q = "SELECT COUNT(*) AS count FROM logs WHERE 1=1 AND entry_id IS NOT NULL AND package_id = %s".replace(" AND entry_id IS NOT NULL", "")
+            count_q = "SELECT COUNT(*) AS count FROM logs WHERE 1=1 AND package_id = %s"
+            count_p = [package_id]
+            if created_from:
+                count_q += " AND created_at >= %s"
+                count_p.append(created_from)
+            if created_to:
+                count_q += " AND created_at <= %s"
+                count_p.append(created_to)
+            cursor.execute(count_q, count_p)
+            counts["logs"] = cursor.fetchone()["count"]
+
+            # Notices count
+            count_q = "SELECT COUNT(*) AS count FROM notices WHERE 1=1 AND package_id = %s"
+            count_p = [package_id]
+            if created_from:
+                count_q += " AND created_at >= %s"
+                count_p.append(created_from)
+            if created_to:
+                count_q += " AND created_at <= %s"
+                count_p.append(created_to)
+            cursor.execute(count_q, count_p)
+            counts["notices"] = cursor.fetchone()["count"]
+
+            response["counts"] = counts
+
+    finally:
+        connection.close()
+
+    return jsonify(response)
+
+@app.route('/entries/<int:entry_id>/details', methods=['GET'])
+def get_entry_details(entry_id):
+    """Devuelve datos agregados de un entry y sus recursos relacionados por entry_id.
+
+    Params opcionales:
+      - include: lista separada por comas (detections,logs,notices)
+      - created_from, created_to: rango de fechas (aplica a created_at en logs/notices; en detections a d.fecha)
+      - Paginación por colección:
+          limit_detections, offset_detections
+          limit_logs, offset_logs
+          limit_notices, offset_notices
+    """
+
+    include_param = request.args.get('include', 'detections,logs,notices')
+    include = {part.strip() for part in include_param.split(',') if part.strip()}
+
+    created_from = request.args.get('created_from')
+    created_to = request.args.get('created_to')
+
+    limit_detections = int(request.args.get('limit_detections', 50))
+    offset_detections = int(request.args.get('offset_detections', 0))
+
+    limit_logs = int(request.args.get('limit_logs', 50))
+    offset_logs = int(request.args.get('offset_logs', 0))
+
+    limit_notices = int(request.args.get('limit_notices', 50))
+    offset_notices = int(request.args.get('offset_notices', 0))
+
+    response = {}
+
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            # Entry
+            cursor.execute("SELECT * FROM entries WHERE id = %s", (entry_id,))
+            response["entry"] = cursor.fetchone()
+
+            # Detections asociadas al entry
+            if 'detections' in include:
+                query_det = """
+                    SELECT 
+                        d.id AS detection_id,
+                        d.entry_id,
+                        d.package_id,
+                        d.intrusismo,
+                        d.umbral,
+                        d.restaurado,
+                        d.modo_deteccion,
+                        d.fecha
+                    FROM detections d
+                    WHERE d.entry_id = %s
+                """
+                params_det = [entry_id]
+                if created_from:
+                    query_det += " AND d.fecha >= %s"
+                    params_det.append(created_from)
+                if created_to:
+                    query_det += " AND d.fecha <= %s"
+                    params_det.append(created_to)
+                query_det += " ORDER BY d.fecha DESC LIMIT %s OFFSET %s"
+                params_det.extend([limit_detections, offset_detections])
+                cursor.execute(query_det, params_det)
+                response["detections"] = cursor.fetchall()
+
+            # Logs del entry
+            if 'logs' in include:
+                filters_logs = {"entry_id": entry_id}
+                query_logs, params_logs = build_query("logs", filters_logs, created_from, created_to)
+                params_logs.extend([limit_logs, offset_logs])
+                cursor.execute(query_logs, params_logs)
+                response["logs"] = cursor.fetchall()
+
+            # Notices del entry
+            if 'notices' in include:
+                filters_notices = {"entry_id": entry_id}
+                query_notices, params_notices = build_query("notices", filters_notices, created_from, created_to)
+                params_notices.extend([limit_notices, offset_notices])
+                cursor.execute(query_notices, params_notices)
+                response["notices"] = cursor.fetchall()
+
+            # Counts (ignoran paginación)
+            counts = {}
+            # Detections count
+            count_q = "SELECT COUNT(*) AS count FROM detections d WHERE d.entry_id = %s"
+            count_p = [entry_id]
+            if created_from:
+                count_q += " AND d.fecha >= %s"
+                count_p.append(created_from)
+            if created_to:
+                count_q += " AND d.fecha <= %s"
+                count_p.append(created_to)
+            cursor.execute(count_q, count_p)
+            counts["detections"] = cursor.fetchone()["count"]
+
+            # Logs count
+            count_q = "SELECT COUNT(*) AS count FROM logs WHERE 1=1 AND entry_id = %s"
+            count_p = [entry_id]
+            if created_from:
+                count_q += " AND created_at >= %s"
+                count_p.append(created_from)
+            if created_to:
+                count_q += " AND created_at <= %s"
+                count_p.append(created_to)
+            cursor.execute(count_q, count_p)
+            counts["logs"] = cursor.fetchone()["count"]
+
+            # Notices count
+            count_q = "SELECT COUNT(*) AS count FROM notices WHERE 1=1 AND entry_id = %s"
+            count_p = [entry_id]
+            if created_from:
+                count_q += " AND created_at >= %s"
+                count_p.append(created_from)
+            if created_to:
+                count_q += " AND created_at <= %s"
+                count_p.append(created_to)
+            cursor.execute(count_q, count_p)
+            counts["notices"] = cursor.fetchone()["count"]
+
+            response["counts"] = counts
+
+    finally:
+        connection.close()
+
+    return jsonify(response)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
